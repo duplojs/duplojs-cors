@@ -23,6 +23,8 @@ duplo.use(duploCors, {
 });
 
 // declare routes ...
+
+duplo.launch();
 ```
 
 ### Local:
