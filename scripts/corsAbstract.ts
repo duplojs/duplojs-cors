@@ -1,6 +1,17 @@
-import {DuploConfig, DuploInstance} from "@duplojs/duplojs";
+import {AbstractRoute, DuploConfig, DuploInstance} from "@duplojs/duplojs";
 import {DuploCorsOptions} from "./cors";
 import packageJson from "../package.json";
+
+function findAbstractCors(abstract?: AbstractRoute){
+	if(!abstract) return false;
+	else if(abstract.name.startsWith("abstractCors")) return true;
+	else if(abstract.mergeAbstractRoute){
+		for(const mar of abstract.mergeAbstractRoute){
+			if(findAbstractCors(mar)) return true;
+		}
+	}
+	else return findAbstractCors(abstract.parentAbstractRoute);
+}
 
 function duploCorsAbstract(
 	instance: DuploInstance<DuploConfig>, 
@@ -76,7 +87,7 @@ function duploCorsAbstract(
 	
 	// Create options routes when route is declare with abstractCors
 	instance.addHook("onDeclareRoute", (route) => {
-		if(route.abstractRoute?.name !== nameAbstractCors) return;
+		if(!findAbstractCors(route.abstractRoute)) return;
 		
 		route.path.forEach(path => {
 			const optionsRoute = instance.declareRoute("OPTIONS", path);
