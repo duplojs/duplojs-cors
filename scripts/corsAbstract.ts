@@ -26,8 +26,7 @@ function duploCorsAbstract(
 ){
 	instance.plugins["@duplojs/cors"] = {version: packageJson.version};
 
-	const nameAbstractCors = `abstractCors${duploCorsAbstract.count++}`;
-	const abstractCors = instance.declareAbstractRoute(nameAbstractCors);
+	const abstractCors = instance.declareAbstractRoute(`abstractCors${duploCorsAbstract.count++}`);
 
 	//add "Access-Control-Allow-Origin" header to request declare with abstractCors
 	if(allowOrigin){
