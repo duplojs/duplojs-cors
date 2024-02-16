@@ -1,17 +1,13 @@
 import {AbstractRoute, DuploConfig, DuploInstance} from "@duplojs/duplojs";
+import {hasDuplose, extractAbstractRoute} from "@duplojs/editor-tools";
 import {DuploCorsOptions} from "./cors";
 import packageJson from "../package.json";
-
-function findAbstractCors(abstract?: AbstractRoute){
-	if(!abstract) return false;
-	else if(abstract.name.startsWith("abstractCors")) return true;
-	else if(abstract.mergeAbstractRoute){
-		for(const mar of abstract.mergeAbstractRoute){
-			if(findAbstractCors(mar)) return true;
-		}
-	}
-	else return findAbstractCors(abstract.parentAbstractRoute);
-}
+import {allowOriginFunction} from "./makeFunctions/allowOrigin";
+import {exposeHeadersFunction} from "./makeFunctions/exposeHeaders";
+import {credentialsFunction} from "./makeFunctions/credentials";
+import {allowHeadersFunction} from "./makeFunctions/allowHeaders";
+import {maxAgeFunction} from "./makeFunctions/maxAge";
+import {allowMethodsFunction} from "./makeFunctions/allowMethods";
 
 function duploCorsAbstract(
 	instance: DuploInstance<DuploConfig>, 
@@ -26,42 +22,22 @@ function duploCorsAbstract(
 ){
 	instance.plugins["@duplojs/cors"] = {version: packageJson.version};
 
-	const abstractCors = instance.declareAbstractRoute(`abstractCors${duploCorsAbstract.count++}`);
+	const instanceAbstractCors = instance.declareAbstractRoute(`abstractCors${duploCorsAbstract.count++}`).build()();
+	const abstractCors = extractAbstractRoute(instanceAbstractCors) as AbstractRoute;
 
 	//add "Access-Control-Allow-Origin" header to request declare with abstractCors
 	if(allowOrigin){
-		if(typeof allowOrigin === "string") abstractCors.hook(
-			"onConstructResponse",
-			response => {response.setHeader("Access-Control-Allow-Origin", allowOrigin);}
+		if(typeof allowOrigin === "string") abstractCors.hooksLifeCyle.onConstructResponse.addSubscriber(
+			allowOriginFunction.isString(allowOrigin)
 		);
-		else if(allowOrigin instanceof RegExp) abstractCors.hook(
-			"beforeRouteExecution",
-			(request, response) => {
-				if(allowOrigin.test(request.origin)) response.setHeader("Access-Control-Allow-Origin", request.origin);
-			}
+		else if(allowOrigin instanceof RegExp) abstractCors.hooksLifeCyle.beforeRouteExecution.addSubscriber(
+			allowOriginFunction.isRegExp(allowOrigin)
 		);
-		else if(allowOrigin instanceof Array) instance.addHook(
-			"beforeRouteExecution",
-			(request, response) => {
-				for(const origin of allowOrigin){
-					if(typeof origin === "string"){
-						if(origin === request.origin){
-							response.setHeader("Access-Control-Allow-Origin", request.origin);
-							break;
-						}
-					}
-					else if(origin.test(request.origin)){ 
-						response.setHeader("Access-Control-Allow-Origin", request.origin);
-						break;
-					}
-				}
-			}
+		else if(allowOrigin instanceof Array) abstractCors.hooksLifeCyle.beforeRouteExecution.addSubscriber(
+			allowOriginFunction.isArray(allowOrigin)
 		);
-		else abstractCors.hook(
-			"beforeRouteExecution",
-			async(request, response) => {
-				if(await allowOrigin(request.origin) === true) response.setHeader("Access-Control-Allow-Origin", request.origin);
-			}
+		else abstractCors.hooksLifeCyle.beforeRouteExecution.addSubscriber(
+			allowOriginFunction.isFunction(allowOrigin)
 		);
 	}
 
@@ -69,135 +45,83 @@ function duploCorsAbstract(
 	if(exposeHeaders){
 		if(exposeHeaders instanceof Array)exposeHeaders = exposeHeaders.join(", ");
 
-		abstractCors.hook(
-			"beforeRouteExecution",
-			(request, response) => {response.setHeader("Access-Control-Expose-Headers", exposeHeaders as string);}
+		abstractCors.hooksLifeCyle.onConstructResponse.addSubscriber(
+			exposeHeadersFunction.default(exposeHeaders as string)
 		);
 	}
 
 	//add "Access-Control-Allow-Credentials" header to request declare with abstractCors
-	if(credentials) abstractCors.hook(
-		"beforeRouteExecution", 
-		(request, response) => {response.setHeader("Access-Control-Allow-Credentials", "true");}
+	if(credentials) abstractCors.hooksLifeCyle.onConstructResponse.addSubscriber(
+		credentialsFunction.default()
 	);
 
 	const methodsRoutes: Record<string, string[]> = {};
 	const methodsRoutesBuilded: Record<string, string> = {};
+	instance.addHook(
+		"beforeBuildRouter",
+		() => Object.entries(methodsRoutes).forEach(([key, value]) => 
+			methodsRoutesBuilded[key] = value.join(", ")
+		)
+	);
 	
 	// Create options routes when route is declare with abstractCors
 	instance.addHook("onDeclareRoute", (route) => {
-		if(!findAbstractCors(route.abstractRoute)) return;
-		
-		route.path.forEach(path => {
-			const optionsRoute = instance.declareRoute("OPTIONS", path);
+		if(route.method === "OPTIONS" || !hasDuplose(route, abstractCors)) return;
 
-			//add "Access-Control-Allow-Origin" header to preflight
-			if(allowOrigin){
-				if(typeof allowOrigin === "string") optionsRoute.hook(
-					"onConstructResponse",
-					response => {response.setHeader("Access-Control-Allow-Origin", allowOrigin);}
-				);
-				else if(allowOrigin instanceof RegExp) optionsRoute.hook(
-					"beforeRouteExecution",
-					(request, response) => {
-						if(allowOrigin.test(request.origin)) response.setHeader("Access-Control-Allow-Origin", request.origin);
-					}
-				);
-				else if(allowOrigin instanceof Array) instance.addHook(
-					"beforeRouteExecution",
-					(request, response) => {
-						for(const origin of allowOrigin){
-							if(typeof origin === "string"){
-								if(origin === request.origin){
-									response.setHeader("Access-Control-Allow-Origin", request.origin);
-									break;
-								}
-							}
-							else if(origin.test(request.origin)){ 
-								response.setHeader("Access-Control-Allow-Origin", request.origin);
-								break;
-							}
-						}
-					}
-				);
-				else optionsRoute.hook(
-					"beforeRouteExecution",
-					async(request, response) => {
-						if(await allowOrigin(request.origin) === true) response.setHeader("Access-Control-Allow-Origin", request.origin);
-					}
+		const optionsRouteBuilder = instanceAbstractCors.declareRoute("OPTIONS", route.paths);
+
+		if(allowHeaders){
+			if(allowHeaders === true && Object.keys(route.extracted.headers || {})[0]){
+				optionsRouteBuilder.hook(
+					"onConstructResponse", 
+					allowHeadersFunction.default(Object.keys(route.extracted.headers || {}).join(", "))
 				);
 			}
-
-			//add "Access-Control-Expose-Headers" header to preflight
-			if(exposeHeaders){
-				if(exposeHeaders instanceof Array)exposeHeaders = exposeHeaders.join(", ");
-		
-				optionsRoute.hook(
-					"beforeRouteExecution",
-					(request, response) => {response.setHeader("Access-Control-Expose-Headers", exposeHeaders as string);}
-				);
-			}
-		
-			//add "Access-Control-Allow-Credentials" header to preflight
-			if(credentials) optionsRoute.hook(
-				"beforeRouteExecution", 
-				(request, response) => {response.setHeader("Access-Control-Allow-Credentials", "true");}
-			);
-			
-			//add "Access-Control-Allow-Headers" header to preflight (only)
-			if(allowHeaders){
+			else {
 				if(allowHeaders instanceof Array)allowHeaders = allowHeaders.join(", ");
-		
-				optionsRoute.hook(
-					"beforeRouteExecution", 
-					(request, response) => {response.setHeader("Access-Control-Allow-Headers", allowHeaders as string);}
+	
+				optionsRouteBuilder.hook(
+					"onConstructResponse", 
+					allowHeadersFunction.default(allowHeaders as string)
 				);
 			}
+		}
 
-			//add "Access-Control-Max-Age" header to preflight (only)
-			if(maxAge !== undefined) optionsRoute.hook(
-				"beforeRouteExecution", 
-				(request, response) => {response.setHeader("Access-Control-Max-Age", maxAge.toString());}
-			);
-			
-			//add "Access-Control-Allow-Methods" header to preflight (only)
-			if(allowMethods){
-				if(allowMethods instanceof Array){
-					const methods = allowMethods.join(", ");
-					optionsRoute.hook(
-						"beforeRouteExecution", 
-						(request, response) => {response.setHeader("Access-Control-Allow-Methods", methods);}
-					);
-				}
-				else {
-					//save methods of différent route
+		if(maxAge !== undefined) optionsRouteBuilder.hook(
+			"onConstructResponse", 
+			maxAgeFunction.default(maxAge.toString())
+		);
+
+		if(allowMethods){
+			if(allowMethods instanceof Array){
+				optionsRouteBuilder.hook(
+					"onConstructResponse", 
+					allowMethodsFunction.isArray(allowMethods.join(", "))
+				);
+			}
+			else {
+				route.paths.forEach(path => {
 					if(!methodsRoutes[path]) methodsRoutes[path] = [];
 					methodsRoutes[path].push(route.method);
-						
-					optionsRoute.hook(
-						"beforeRouteExecution", 
-						(request, response) => {response.setHeader("Access-Control-Allow-Methods", methodsRoutesBuilded[path]);}
-					);
-		
-					instance.addHook(
-						"onReady",
-						() => Object.entries(methodsRoutes).forEach(([key, value]) => 
-							methodsRoutesBuilded[key] = value.join(", ")
-						)
-					);
-				}
+				});
+
+				optionsRouteBuilder.hook(
+					"beforeRouteExecution", 
+					allowMethodsFunction.isBool(methodsRoutesBuilded)
+				);
 			}
+		}
 
-			optionsRoute.hook(
-				"beforeRouteExecution", 
-				(request, response) => {response.code(204).send();}
-			);
+		optionsRouteBuilder.hook(
+			"beforeRouteExecution", 
+			(request, response) => {response.code(204).send();}
+		);
 
-			optionsRoute.handler(() => {});
-		});
+		optionsRouteBuilder.handler(() => {});
+		
 	});
 
-	return abstractCors.build()();
+	return instanceAbstractCors;
 }
 
 duploCorsAbstract.count = 0;
