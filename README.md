@@ -1,4 +1,5 @@
 # duplojs-cors
+[![NPM version](https://img.shields.io/npm/v/@duplojs/cors)](https://www.npmjs.com/package/@duplojs/cors)
 
 ## Instalation
 ```
