@@ -1,5 +1,11 @@
 import {DuploConfig, DuploInstance, PromiseOrNot, Request} from "@duplojs/duplojs";
 import packageJson from "../package.json";
+import {allowOriginFunction} from "./makeFunctions/allowOrigin";
+import {exposeHeadersFunction} from "./makeFunctions/exposeHeaders";
+import {credentialsFunction} from "./makeFunctions/credentials";
+import {allowHeadersFunction} from "./makeFunctions/allowHeaders";
+import {maxAgeFunction} from "./makeFunctions/maxAge";
+import {allowMethodsFunction} from "./makeFunctions/allowMethods";
 
 declare module "@duplojs/duplojs" {
 	interface Plugins {
@@ -9,7 +15,7 @@ declare module "@duplojs/duplojs" {
 
 export interface DuploCorsOptions {
     allowOrigin?: string | RegExp | (string | RegExp)[] | ((origin: string) => PromiseOrNot<boolean>);
-    allowHeaders?: string | string[];
+    allowHeaders?: string | string[] | boolean;
     exposeHeaders?: string | string[];
     maxAge?: number;
 	credentials?: boolean;
@@ -32,36 +38,19 @@ export default function duploCors(
 	if(allowOrigin){
 		if(typeof allowOrigin === "string") instance.addHook(
 			"onConstructResponse",
-			response => {response.setHeader("Access-Control-Allow-Origin", allowOrigin);}
+			allowOriginFunction.isString(allowOrigin)
 		);
 		else if(allowOrigin instanceof RegExp) instance.addHook(
 			"beforeRouteExecution",
-			(request, response) => {
-				if(allowOrigin.test(request.origin)) response.setHeader("Access-Control-Allow-Origin", request.origin);
-			}
+			allowOriginFunction.isRegExp(allowOrigin)
 		);
 		else if(allowOrigin instanceof Array) instance.addHook(
 			"beforeRouteExecution",
-			(request, response) => {
-				for(const origin of allowOrigin){
-					if(typeof origin === "string"){
-						if(origin === request.origin){
-							response.setHeader("Access-Control-Allow-Origin", request.origin);
-							break;
-						}
-					}
-					else if(origin.test(request.origin)){ 
-						response.setHeader("Access-Control-Allow-Origin", request.origin);
-						break;
-					}
-				}
-			}
+			allowOriginFunction.isArray(allowOrigin)
 		);
 		else instance.addHook(
 			"beforeRouteExecution",
-			async(request, response) => {
-				if(await allowOrigin(request.origin) === true) response.setHeader("Access-Control-Allow-Origin", request.origin);
-			}
+			allowOriginFunction.isFunction(allowOrigin)
 		);
 	}
 
@@ -69,72 +58,78 @@ export default function duploCors(
 		if(exposeHeaders instanceof Array)exposeHeaders = exposeHeaders.join(", ");
 
 		instance.addHook(
-			"beforeRouteExecution",
-			(request, response) => {response.setHeader("Access-Control-Expose-Headers", exposeHeaders as string);}
+			"onConstructResponse",
+			exposeHeadersFunction.default(exposeHeaders as string)
 		);
 	}
 	
 	if(credentials) instance.addHook(
-		"beforeRouteExecution", 
-		(request, response) => {response.setHeader("Access-Control-Allow-Credentials", "true");}
+		"onConstructResponse", 
+		credentialsFunction.default()
 	);
-
+	
 	const methodsRoutes: Record<string, string[]> = {};
 	const methodsRoutesBuilded: Record<string, string> = {};
+	instance.addHook(
+		"beforeBuildRouter",
+		() => Object.entries(methodsRoutes).forEach(([key, value]) => 
+			methodsRoutesBuilded[key] = value.join(", ")
+		)
+	);
 
 	// Create options routes when route is declare with abstractCors
 	instance.addHook("onDeclareRoute", (route) => {
 		if(route.method === "OPTIONS") return;
 		
-		route.path.forEach(path => {
-			const optionsRoute = instance.declareRoute("OPTIONS", path);
+		const optionsRouteBuilder = instance.declareRoute("OPTIONS", route.paths);
 
-			if(allowHeaders){
-				if(allowHeaders instanceof Array)allowHeaders = allowHeaders.join(", ");
-		
-				optionsRoute.hook(
-					"beforeRouteExecution", 
-					(request, response) => {response.setHeader("Access-Control-Allow-Headers", allowHeaders as string);}
+		if(allowHeaders){
+			if(allowHeaders === true && Object.keys(route.extracted.headers || {})[0]){
+				optionsRouteBuilder.hook(
+					"onConstructResponse", 
+					allowHeadersFunction.default(Object.keys(route.extracted.headers || {}).join(", "))
 				);
 			}
+			else {
+				if(allowHeaders instanceof Array)allowHeaders = allowHeaders.join(", ");
+	
+				optionsRouteBuilder.hook(
+					"onConstructResponse", 
+					allowHeadersFunction.default(allowHeaders as string)
+				);
+			}
+		}
 
-			if(maxAge !== undefined) optionsRoute.hook(
-				"beforeRouteExecution", 
-				(request, response) => {response.setHeader("Access-Control-Max-Age", maxAge.toString());}
-			);
-
-			if(allowMethods){
-				if(allowMethods instanceof Array){
-					const methods = allowMethods.join(", ");
-					optionsRoute.hook(
-						"beforeRouteExecution", 
-						(request, response) => {response.setHeader("Access-Control-Allow-Methods", methods);}
-					);
-				}
-				else {
+		if(maxAge !== undefined) optionsRouteBuilder.hook(
+			"onConstructResponse", 
+			maxAgeFunction.default(maxAge.toString())
+		);
+		
+		if(allowMethods){
+			if(allowMethods instanceof Array){
+				optionsRouteBuilder.hook(
+					"onConstructResponse", 
+					allowMethodsFunction.isArray(allowMethods.join(", "))
+				);
+			}
+			else {
+				route.paths.forEach(path => {
 					if(!methodsRoutes[path]) methodsRoutes[path] = [];
 					methodsRoutes[path].push(route.method);
-						
-					optionsRoute.hook(
-						"beforeRouteExecution", 
-						(request, response) => {response.setHeader("Access-Control-Allow-Methods", methodsRoutesBuilded[path]);}
-					);
-		
-					instance.addHook(
-						"onReady",
-						() => Object.entries(methodsRoutes).forEach(([key, value]) => 
-							methodsRoutesBuilded[key] = value.join(", ")
-						)
-					);
-				}
+				});
+
+				optionsRouteBuilder.hook(
+					"beforeRouteExecution", 
+					allowMethodsFunction.isBool(methodsRoutesBuilded)
+				);
 			}
+		}
 
-			optionsRoute.hook(
-				"beforeRouteExecution", 
-				(request, response) => {response.code(204).send();}
-			);
+		optionsRouteBuilder.hook(
+			"beforeRouteExecution", 
+			(request, response) => {response.code(204).send();}
+		);
 
-			optionsRoute.handler(() => {});
-		});
+		optionsRouteBuilder.handler(() => {});
 	});
 }

@@ -1,4 +1,5 @@
 # duplojs-cors
+[![NPM version](https://img.shields.io/npm/v/@duplojs/cors)](https://www.npmjs.com/package/@duplojs/cors)
 
 ## Instalation
 ```
@@ -12,7 +13,7 @@ npm i @duplojs/cors
 import Duplo from "@duplojs/duplojs";
 import duploCors from "@duplojs/cors";
 
-const duplo = Duplo({port: 1506, host: "0.0.0.0"});
+const duplo = Duplo({port: 1506, host: "localhost", environment: "DEV"});
 duplo.use(duploCors, {
     allowOrigin: "localhost",
     allowHeaders: ["content-type", "accept"],
@@ -32,7 +33,7 @@ duplo.launch();
 import Duplo from "@duplojs/duplojs";
 import {duploCorsAbstract} from "@duplojs/cors";
 
-const duplo = Duplo({port: 1506, host: "0.0.0.0"});
+const duplo = Duplo({port: 1506, host: "localhost", environment: "DEV"});
 const abstractCors = duplo.use(duploCorsAbstract, {
     allowOrigin: "localhost",
     allowHeaders: ["content-type", "accept"],
